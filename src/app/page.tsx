@@ -1,5 +1,7 @@
 "use client";
+
 import { useState, useRef } from "react";
+import { useDropzone } from "react-dropzone";
 import { Upload, Download, Image as ImageIcon, RefreshCw } from "lucide-react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Progress } from "@/components/ui/progress";
@@ -15,6 +17,7 @@ import { Button } from "@/components/ui/button";
 import Image from "next/image";
 import { Input } from "@/components/ui/input";
 import { readableBytes } from "@/lib/utils";
+import Wrapper from "@/components/wrapper";
 
 interface ImageInfo {
   originalSize: number;
@@ -31,11 +34,15 @@ export default function ImageResizePage() {
   const [imageInfo, setImageInfo] = useState<ImageInfo | null>(null);
   const [progress, setProgress] = useState<number>(0);
   const [targetSizeKB, setTargetSizeKB] = useState<number>(100);
+  const [maintainAspect, setMaintainAspect] = useState<boolean>(true); // Example new feature
 
   const workerRef = useRef<Worker | null>(null);
 
-  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
+  // ---------------------------------------
+  // 1) Handle File(s) via Dropzone
+  // ---------------------------------------
+  const onDrop = (acceptedFiles: File[]) => {
+    const file = acceptedFiles[0];
     if (!file) return;
 
     if (!file.type.startsWith("image/")) {
@@ -43,11 +50,16 @@ export default function ImageResizePage() {
       return;
     }
 
+    // limit 10MB
     if (file.size > 10 * 1024 * 1024) {
       setError("File size should be less than 10MB");
       return;
     }
 
+    setError(null);
+    setProgress(0);
+
+    // Convert file to dataURL
     const reader = new FileReader();
     reader.onload = (event) => {
       const img = document.createElement("img");
@@ -59,32 +71,38 @@ export default function ImageResizePage() {
           resizedSize: 0,
           name: file.name,
         });
-        setError(null);
-        setProgress(0);
       };
       img.src = event.target?.result as string;
     };
     reader.readAsDataURL(file);
   };
 
+  // We only allow single file; up to 10MB; accept images
+  const { getRootProps, getInputProps, isDragActive } = useDropzone({
+    onDrop,
+    multiple: false,
+    maxSize: 10 * 1024 * 1024,
+    accept: {
+      "image/*": [],
+    },
+  });
+
+  // ---------------------------------------
+  // 2) Handle Worker-based Resizing
+  // ---------------------------------------
   const handleResize = () => {
     if (!image || !imageInfo || !preview) return;
 
     setLoading(true);
     setProgress(0);
 
+    // Create new worker if not existing
     workerRef.current = new Worker(
       new URL("../workers/imageWorker.ts", import.meta.url)
     );
 
     workerRef.current.onmessage = (event) => {
       const { resizedImage, fileSize, progress, error } = event.data;
-      console.log({
-        resizedImage,
-        fileSize,
-        progress,
-        error,
-      });
 
       if (error) {
         setError(error);
@@ -99,6 +117,7 @@ export default function ImageResizePage() {
       }
 
       if (progress === 100 && resizedImage) {
+        // Download result automatically
         const link = document.createElement("a");
         const fileName = imageInfo.name.replace(/\.[^/.]+$/, "");
         link.download = `${fileName}-resized.${format}`;
@@ -127,67 +146,79 @@ export default function ImageResizePage() {
       workerRef.current = null;
     };
 
+    // In case you want to override dimensions before sending to worker:
+    // e.g., if maintainAspect is OFF, you might let user specify custom width/height
+    const maxWidth = maintainAspect ? image.width : image.width; // or custom
+    const maxHeight = maintainAspect ? image.height : image.height; // or custom
+
     workerRef.current.postMessage({
       imageDataUrl: preview,
       format,
       targetSizeKB,
-      maxWidth: image.width,
-      maxHeight: image.height,
+      maxWidth,
+      maxHeight,
     });
   };
 
+  // ---------------------------------------
+  // 3) Reset State
+  // ---------------------------------------
   const resetState = () => {
     setImage(null);
     setPreview(null);
     setError(null);
     setImageInfo(null);
     setProgress(0);
+    setLoading(false);
     if (workerRef.current) {
       workerRef.current.terminate();
       workerRef.current = null;
     }
   };
 
+  // ---------------------------------------
+  // 4) UI
+  // ---------------------------------------
   return (
-    <div className="min-h-screen bg-gray-50 py-12 w-full">
-      <div className="max-w-4xl mx-auto px-4">
-        <Card>
+    <Wrapper as="section" className="w-full py-10">
+      <div className="max-w-4xl mx-auto">
+        <Card className="shadow-md">
           <CardHeader>
             <CardTitle className="text-2xl font-bold text-center">
               Image Resizer
             </CardTitle>
           </CardHeader>
+
           <CardContent className="space-y-6">
+            {/* Dropzone or Preview */}
             {!preview ? (
-              <div className="flex flex-col items-center gap-4 p-8 border-2 border-dashed border-gray-300 rounded-lg">
+              <div
+                {...getRootProps()}
+                className={`flex flex-col items-center justify-center gap-4 p-8 border-2 rounded-lg transition-colors ${
+                  isDragActive
+                    ? "border-blue-500 bg-blue-50"
+                    : "border-gray-300 bg-white"
+                } cursor-pointer text-center`}
+              >
+                <input {...getInputProps()} />
                 <ImageIcon className="w-12 h-12 text-gray-400" />
-                <div className="flex flex-col items-center">
-                  <label className="cursor-pointer" htmlFor="file">
-                    <div>
-                      <Upload className="w-4 h-4 mr-2" />
-                      Choose Image
-                    </div>
-                    <input
-                      name="file"
-                      type="file"
-                      accept="image/*"
-                      onChange={handleFileChange}
-                    />
-                  </label>
-                  <p className="mt-2 text-sm text-gray-500">
-                    PNG, JPG up to 10MB
-                  </p>
-                </div>
+                <p className="text-gray-500">
+                  Drag & Drop or Click to upload (PNG/JPG up to 10MB)
+                </p>
+                <Button variant="ghost" className="flex items-center gap-2">
+                  <Upload className="w-4 h-4" />
+                  Choose Image
+                </Button>
               </div>
             ) : (
               <div className="space-y-6">
-                <div className="relative aspect-video rounded-lg overflow-hidden bg-gray-100">
+                {/* Preview Image */}
+                <div className="relative aspect-video rounded-lg overflow-hidden bg-gray-200">
                   <Image
-                    height={800}
-                    width={600}
                     src={preview}
                     alt="Preview"
-                    className="object-contain w-full h-full"
+                    fill
+                    className="object-contain"
                   />
                   <Button
                     variant="outline"
@@ -200,6 +231,7 @@ export default function ImageResizePage() {
                   </Button>
                 </div>
 
+                {/* File sizes */}
                 {imageInfo && (
                   <div className="grid grid-cols-2 gap-4 text-sm">
                     <div>
@@ -212,27 +244,32 @@ export default function ImageResizePage() {
                       <div>
                         <p className="text-gray-500">Resized Size</p>
                         <p className="font-medium">
-                            {readableBytes(imageInfo.resizedSize * 1024)}
+                          {readableBytes(imageInfo.resizedSize * 1024)}
                         </p>
                       </div>
                     )}
                   </div>
                 )}
 
+                {/* Settings */}
                 <div className="space-y-4">
-                  <div className="space-y-2">
+                  {/* Target Size */}
+                  <div className="space-y-1">
                     <label className="text-sm font-medium">
                       Target Size (KB)
                     </label>
                     <Input
                       value={targetSizeKB.toString()}
                       type="number"
-                      onChange={(input) => {
-                        setTargetSizeKB(input.target.valueAsNumber);
+                      min={1}
+                      onChange={(e) => {
+                        setTargetSizeKB(e.target.valueAsNumber || 1);
                       }}
                     />
                   </div>
-                  <div className="space-y-2">
+
+                  {/* Format */}
+                  <div className="space-y-1">
                     <label className="text-sm font-medium">Output Format</label>
                     <Select
                       value={format}
@@ -249,8 +286,23 @@ export default function ImageResizePage() {
                       </SelectContent>
                     </Select>
                   </div>
+
+                  {/* Maintain Aspect Ratio - example new feature */}
+                  <div className="flex items-center gap-2">
+                    <input
+                      id="maintainAspect"
+                      type="checkbox"
+                      disabled
+                      checked={maintainAspect}
+                      onChange={(e) => setMaintainAspect(e.target.checked)}
+                    />
+                    <label htmlFor="maintainAspect" className="text-sm">
+                      Maintain aspect ratio
+                    </label>
+                  </div>
                 </div>
 
+                {/* Progress */}
                 {loading && (
                   <div className="space-y-2">
                     <Progress value={progress} />
@@ -260,6 +312,7 @@ export default function ImageResizePage() {
                   </div>
                 )}
 
+                {/* Action Button */}
                 <Button
                   className="w-full"
                   onClick={handleResize}
@@ -280,6 +333,7 @@ export default function ImageResizePage() {
               </div>
             )}
 
+            {/* Error Alert */}
             {error && (
               <Alert variant="destructive">
                 <AlertDescription>{error}</AlertDescription>
@@ -288,6 +342,6 @@ export default function ImageResizePage() {
           </CardContent>
         </Card>
       </div>
-    </div>
+    </Wrapper>
   );
 }

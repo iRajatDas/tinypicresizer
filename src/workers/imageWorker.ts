@@ -60,7 +60,7 @@ const resizeImage = async (
   offscreenCtx.drawImage(bitmap, 0, 0, width, height);
 
   const blob = await offscreenCanvas.convertToBlob({
-    type: `image/${format}`,
+    type: `image/${format === "png" ? "webp" : "jpeg"}`,
     quality: format === "png" ? 1.0 : quality, // PNG ignores quality, but we pass it anyway
   });
   return await new Promise((resolve) => {
