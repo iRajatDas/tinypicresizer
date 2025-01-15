@@ -1,101 +1,293 @@
+"use client";
+import { useState, useRef } from "react";
+import { Upload, Download, Image as ImageIcon, RefreshCw } from "lucide-react";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Progress } from "@/components/ui/progress";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Button } from "@/components/ui/button";
 import Image from "next/image";
+import { Input } from "@/components/ui/input";
+import { readableBytes } from "@/lib/utils";
 
-export default function Home() {
+interface ImageInfo {
+  originalSize: number;
+  resizedSize: number;
+  name: string;
+}
+
+export default function ImageResizePage() {
+  const [image, setImage] = useState<HTMLImageElement | null>(null);
+  const [preview, setPreview] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [format, setFormat] = useState<"jpeg" | "png">("jpeg");
+  const [loading, setLoading] = useState<boolean>(false);
+  const [imageInfo, setImageInfo] = useState<ImageInfo | null>(null);
+  const [progress, setProgress] = useState<number>(0);
+  const [targetSizeKB, setTargetSizeKB] = useState<number>(100);
+
+  const workerRef = useRef<Worker | null>(null);
+
+  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    if (!file.type.startsWith("image/")) {
+      setError("Please upload an image file");
+      return;
+    }
+
+    if (file.size > 10 * 1024 * 1024) {
+      setError("File size should be less than 10MB");
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const img = document.createElement("img");
+      img.onload = () => {
+        setImage(img);
+        setPreview(event.target?.result as string);
+        setImageInfo({
+          originalSize: Math.round(file.size),
+          resizedSize: 0,
+          name: file.name,
+        });
+        setError(null);
+        setProgress(0);
+      };
+      img.src = event.target?.result as string;
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const handleResize = () => {
+    if (!image || !imageInfo || !preview) return;
+
+    setLoading(true);
+    setProgress(0);
+
+    workerRef.current = new Worker(
+      new URL("../workers/imageWorker.ts", import.meta.url)
+    );
+
+    workerRef.current.onmessage = (event) => {
+      const { resizedImage, fileSize, progress, error } = event.data;
+      console.log({
+        resizedImage,
+        fileSize,
+        progress,
+        error,
+      });
+
+      if (error) {
+        setError(error);
+        setLoading(false);
+        workerRef.current?.terminate();
+        workerRef.current = null;
+        return;
+      }
+
+      if (progress !== undefined) {
+        setProgress(progress);
+      }
+
+      if (progress === 100 && resizedImage) {
+        const link = document.createElement("a");
+        const fileName = imageInfo.name.replace(/\.[^/.]+$/, "");
+        link.download = `${fileName}-resized.${format}`;
+        link.href = resizedImage;
+        link.click();
+
+        setImageInfo((prev) =>
+          prev
+            ? {
+                ...prev,
+                resizedSize: fileSize,
+              }
+            : null
+        );
+
+        setLoading(false);
+        workerRef.current?.terminate();
+        workerRef.current = null;
+      }
+    };
+
+    workerRef.current.onerror = () => {
+      setError("An unexpected error occurred during processing.");
+      setLoading(false);
+      workerRef.current?.terminate();
+      workerRef.current = null;
+    };
+
+    workerRef.current.postMessage({
+      imageDataUrl: preview,
+      format,
+      targetSizeKB,
+      maxWidth: image.width,
+      maxHeight: image.height,
+    });
+  };
+
+  const resetState = () => {
+    setImage(null);
+    setPreview(null);
+    setError(null);
+    setImageInfo(null);
+    setProgress(0);
+    if (workerRef.current) {
+      workerRef.current.terminate();
+      workerRef.current = null;
+    }
+  };
+
   return (
-    <div className="grid grid-rows-[20px_1fr_20px] items-center justify-items-center min-h-screen p-8 pb-20 gap-16 sm:p-20 font-[family-name:var(--font-geist-sans)]">
-      <main className="flex flex-col gap-8 row-start-2 items-center sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={180}
-          height={38}
-          priority
-        />
-        <ol className="list-inside list-decimal text-sm text-center sm:text-left font-[family-name:var(--font-geist-mono)]">
-          <li className="mb-2">
-            Get started by editing{" "}
-            <code className="bg-black/[.05] dark:bg-white/[.06] px-1 py-0.5 rounded font-semibold">
-              src/app/page.tsx
-            </code>
-            .
-          </li>
-          <li>Save and see your changes instantly.</li>
-        </ol>
+    <div className="min-h-screen bg-gray-50 py-12 w-full">
+      <div className="max-w-4xl mx-auto px-4">
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-2xl font-bold text-center">
+              Image Resizer
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-6">
+            {!preview ? (
+              <div className="flex flex-col items-center gap-4 p-8 border-2 border-dashed border-gray-300 rounded-lg">
+                <ImageIcon className="w-12 h-12 text-gray-400" />
+                <div className="flex flex-col items-center">
+                  <label className="cursor-pointer" htmlFor="file">
+                    <div>
+                      <Upload className="w-4 h-4 mr-2" />
+                      Choose Image
+                    </div>
+                    <input
+                      name="file"
+                      type="file"
+                      accept="image/*"
+                      onChange={handleFileChange}
+                    />
+                  </label>
+                  <p className="mt-2 text-sm text-gray-500">
+                    PNG, JPG up to 10MB
+                  </p>
+                </div>
+              </div>
+            ) : (
+              <div className="space-y-6">
+                <div className="relative aspect-video rounded-lg overflow-hidden bg-gray-100">
+                  <Image
+                    height={800}
+                    width={600}
+                    src={preview}
+                    alt="Preview"
+                    className="object-contain w-full h-full"
+                  />
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="absolute top-2 right-2"
+                    onClick={resetState}
+                  >
+                    <RefreshCw className="w-4 h-4 mr-2" />
+                    Change Image
+                  </Button>
+                </div>
 
-        <div className="flex gap-4 items-center flex-col sm:flex-row">
-          <a
-            className="rounded-full border border-solid border-transparent transition-colors flex items-center justify-center bg-foreground text-background gap-2 hover:bg-[#383838] dark:hover:bg-[#ccc] text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={20}
-              height={20}
-            />
-            Deploy now
-          </a>
-          <a
-            className="rounded-full border border-solid border-black/[.08] dark:border-white/[.145] transition-colors flex items-center justify-center hover:bg-[#f2f2f2] dark:hover:bg-[#1a1a1a] hover:border-transparent text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 sm:min-w-44"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Read our docs
-          </a>
-        </div>
-      </main>
-      <footer className="row-start-3 flex gap-6 flex-wrap items-center justify-center">
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/file.svg"
-            alt="File icon"
-            width={16}
-            height={16}
-          />
-          Learn
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/window.svg"
-            alt="Window icon"
-            width={16}
-            height={16}
-          />
-          Examples
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/globe.svg"
-            alt="Globe icon"
-            width={16}
-            height={16}
-          />
-          Go to nextjs.org →
-        </a>
-      </footer>
+                {imageInfo && (
+                  <div className="grid grid-cols-2 gap-4 text-sm">
+                    <div>
+                      <p className="text-gray-500">Original Size</p>
+                      <p className="font-medium">
+                        {readableBytes(imageInfo.originalSize)}
+                      </p>
+                    </div>
+                    {imageInfo.resizedSize > 0 && (
+                      <div>
+                        <p className="text-gray-500">Resized Size</p>
+                        <p className="font-medium">
+                            {readableBytes(imageInfo.resizedSize * 1024)}
+                        </p>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                <div className="space-y-4">
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium">
+                      Target Size (KB)
+                    </label>
+                    <Input
+                      value={targetSizeKB.toString()}
+                      type="number"
+                      onChange={(input) => {
+                        setTargetSizeKB(input.target.valueAsNumber);
+                      }}
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium">Output Format</label>
+                    <Select
+                      value={format}
+                      onValueChange={(value) =>
+                        setFormat(value as "jpeg" | "png")
+                      }
+                    >
+                      <SelectTrigger>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="jpeg">JPEG</SelectItem>
+                        <SelectItem value="png">PNG</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
+
+                {loading && (
+                  <div className="space-y-2">
+                    <Progress value={progress} />
+                    <p className="text-sm text-center text-gray-500">
+                      Processing image... {progress}%
+                    </p>
+                  </div>
+                )}
+
+                <Button
+                  className="w-full"
+                  onClick={handleResize}
+                  disabled={loading}
+                >
+                  {loading ? (
+                    <>
+                      <RefreshCw className="w-4 h-4 mr-2 animate-spin" />
+                      Processing...
+                    </>
+                  ) : (
+                    <>
+                      <Download className="w-4 h-4 mr-2" />
+                      Download Resized Image
+                    </>
+                  )}
+                </Button>
+              </div>
+            )}
+
+            {error && (
+              <Alert variant="destructive">
+                <AlertDescription>{error}</AlertDescription>
+              </Alert>
+            )}
+          </CardContent>
+        </Card>
+      </div>
     </div>
   );
 }
