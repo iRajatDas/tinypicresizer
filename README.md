@@ -1,7 +1,3 @@
----
-title: "Tiny Pic Resizer"
----
-
 # Tiny Pic Resizer
 
 Efficiently compress and resize images via a Web Worker without blocking the main thread.
